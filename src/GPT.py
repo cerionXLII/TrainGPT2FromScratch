@@ -3,6 +3,17 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from dataclasses import dataclass
+import tiktoken
+import numpy as np
+
+@dataclass
+# Config parameters for GPT model
+class GPTConfig:
+    block_size: int = 1024 # max sequence length
+    vocab_size: int = 50257 # number of tokens: 50,000 BPE merges + 256 bytes tokens + 1 <|endoftext|> token
+    n_layer: int = 12 # number of layers
+    n_head: int = 12 # number of heads
+    n_embd: int = 768 # embedding dimension
 
 class CausalSelfAttention(nn.Module):
 
@@ -39,7 +50,7 @@ class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd)
-        self.gelu    = nn.GELU(approximate='tanh')
+        self.gelu    = nn.GELU(approximate='tanh') # Gaussian Error Linear Unit activation, almost like RELU bug with smoother gradients at <0
         self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd)
         self.c_proj.NANOGPT_SCALE_INIT = 1
 
@@ -59,17 +70,10 @@ class Block(nn.Module):
         self.mlp = MLP(config)
 
     def forward(self, x):
+        # Using residual paths to help with gradient flow
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
-
-@dataclass
-class GPTConfig:
-    block_size: int = 1024 # max sequence length
-    vocab_size: int = 50257 # number of tokens: 50,000 BPE merges + 256 bytes tokens + 1 <|endoftext|> token
-    n_layer: int = 12 # number of layers
-    n_head: int = 12 # number of heads
-    n_embd: int = 768 # embedding dimension
 
 class GPT(nn.Module):
 
@@ -78,12 +82,12 @@ class GPT(nn.Module):
         self.config = config
 
         self.transformer = nn.ModuleDict(dict(
-            wte = nn.Embedding(config.vocab_size, config.n_embd),
-            wpe = nn.Embedding(config.block_size, config.n_embd),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-            ln_f = nn.LayerNorm(config.n_embd),
+            wte = nn.Embedding(config.vocab_size, config.n_embd), # token embeddings
+            wpe = nn.Embedding(config.block_size, config.n_embd), # positional encodings
+            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]), # Nx transformer blocks
+            ln_f = nn.LayerNorm(config.n_embd), # layernorm after the last block
         ))
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False) # language model head, no bias was used in GPT paper
 
         # weight sharing scheme
         self.transformer.wte.weight = self.lm_head.weight
@@ -121,3 +125,43 @@ class GPT(nn.Module):
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
         return logits, loss
+    
+class Generator():
+    def __init__(self, model, tokenizer):
+        self.model = model
+        self.tokenizer = tokenizer
+        
+
+    def generate(self, prompt, max_len=100, top_k=50, num_return_sequences=1):
+        self.model.eval()
+        device = next(self.model.parameters()).device
+        with torch.no_grad():
+            tokens = self.tokenizer.encode(prompt)
+            #tokens = torch.tensor(tokens, device=device).unsqueeze(0)
+            tokens = torch.tensor(tokens, device=device).unsqueeze(0)
+            tokens = tokens.repeat(num_return_sequences, 1)
+
+            for _ in range(max_len):
+
+                logits, _ = self.model(tokens)
+                logits = logits[:, -1, :] #Get the last output of T, (B, vocab_size)
+                probs = F.softmax(logits, dim=-1)
+                top_k_probs, top_k_indices = torch.topk(probs, top_k)
+                ix = torch.multinomial(top_k_probs, 1) #B, 1
+
+                #Get the indices
+                next_token = torch.gather(top_k_indices, -1, ix) #B, 1
+                
+                tokens = torch.cat((tokens, next_token), dim=1)
+                if torch.all(next_token == self.tokenizer.eot_token):
+                    break
+
+            tokens = tokens.squeeze().cpu().numpy()
+
+            texts = []
+            for row in tokens:
+                texts.append(self.tokenizer.decode(row))
+            
+        return texts
+
+
