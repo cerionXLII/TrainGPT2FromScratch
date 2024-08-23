@@ -90,6 +90,8 @@ class GPT(nn.Module):
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False) # language model head, no bias was used in GPT paper
 
         # weight sharing scheme
+        # the weights of the token embeddings are the same as the weights of the final logits layer
+        # Tokens that are similar in the embedding space will also be similar in the output space
         self.transformer.wte.weight = self.lm_head.weight
 
         # init params
