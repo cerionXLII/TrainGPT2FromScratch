@@ -5,6 +5,8 @@ import torch.nn as nn
 import numpy as np
 import time
 import contextlib
+import sys
+print(sys.version)
 
 # Seet seed
 seed = 1337
@@ -25,7 +27,7 @@ print(f'Properties: {torch.cuda.get_device_properties(device=device)}')
 bf16supported = False
 print('bf16 supported:', bf16supported)
 
-
+print(f'Python version: {sys.version}')
 print(f'FlashAttention available: {torch.backends.cuda.flash_sdp_enabled()}')
 print(f'torch version: {torch.__version__}')
 
@@ -35,9 +37,9 @@ model = GPT(config)
 model = model.to(device)
 
 #Compile the model
-# print('Compiling the model')
-# model = torch.compile(model)
-# print('Model compiled...')
+print('Compiling the model')
+model = torch.compile(model)
+print('Model compiled...')
 
 # Load the data
 #path = '../data/simple/'
