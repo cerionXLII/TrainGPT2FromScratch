@@ -140,7 +140,6 @@ class Generator():
         device = next(self.model.parameters()).device
         with torch.no_grad():
             tokens = self.tokenizer.encode(prompt)
-            #tokens = torch.tensor(tokens, device=device).unsqueeze(0)
             tokens = torch.tensor(tokens, device=device).unsqueeze(0)
             tokens = tokens.repeat(num_return_sequences, 1)
 

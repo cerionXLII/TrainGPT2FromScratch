@@ -4,7 +4,7 @@ import tiktoken
 import torch
 
 class DataLoaderGPT():
-    def __init__(self, B, T, process_rank, num_processes, data_root, split='train', is_text=True, tokenizer=None ):
+    def __init__(self, B, T, process_rank, num_processes, data_root, split='train', is_text=True, tokenizer=None):
         self.B = B
         self.T = T
         self.process_rank = process_rank
