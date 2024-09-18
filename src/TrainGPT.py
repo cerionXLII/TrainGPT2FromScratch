@@ -34,7 +34,7 @@ if ddp:
     ddp_rank = int(os.environ['RANK'])
     ddp_local_rank = int(os.environ['LOCAL_RANK'])
     ddp_world_size = int(os.environ['WORLD_SIZE'])
-    device = f'cuda:{ddp_local_rank}'
+    device =  torch.device(f'cuda:{ddp_local_rank}')
     torch.cuda.set_device(device)
     master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
 else:
@@ -68,22 +68,56 @@ print(f'Platform: {sys.platform} Compile supported: {compileSupported}')
 print(f'Python version: {sys.version}')
 print(f'torch version: {torch.__version__}')
 print(f'FlashAttention available: {torch.backends.cuda.flash_sdp_enabled()}')
+print(f'use ddp: {ddp} ddp_world_size: {ddp_world_size}, ddp_local_rank: {ddp_local_rank} ddp_rank: {ddp_rank}')
 
-#bf16supported = torch.cuda.is_bf16_supported()
-bf16supported = False
+
+bf16supported = torch.cuda.is_bf16_supported()
+#bf16supported = False
 print('bf16 supported:', bf16supported)
 print('Device is set to:', device)
 print(f'Properties: {torch.cuda.get_device_properties(device=device)}')
 
+should_resume = True
+start_step = 0
+if should_resume:
+    print('Trying to resume model...')
+    model_folder='../models/'
+    model_filter='model'
+    model_files = []
+    #Check if folder exists
+    if os.path.exists(model_folder):
+        model_files = os.listdir(model_folder)
+        model_files = [f for f in model_files if model_filter in f]
+
+    if len(model_files)==0:
+        print('No previous model found. Starting fresh.')
+        config = GPTConfig()
+        model = GPT(config)
+        print('Model created...')
+    else:
+        model_files.sort()
+        latest_model = model_files[-1]
+        latest_model=os.path.join(model_folder,latest_model)
+        print('Loading model:', latest_model)
+        model_data = torch.load(latest_model, weights_only=False, map_location=device)
+        #dict_keys(['model', 'config', 'step', 'val_loss'])
+        config = model_data['config']
+        model = GPT(model_data['config'])
+        start_step = model_data['step']
+        model.load_state_dict(model_data['model'])
+        print(f'Model loaded... Starting from step: {start_step}, last validation loss: {model_data["val_loss"]}')
+
 # Load the GPT model
-config = GPTConfig()
+
 
 #Print the config:
 print(f'GPTConfig: {config}')
 
-model = GPT(config)
+#Send model to device
+print(f'Sending model to device: {device}')
 model = model.to(device)
 
+compileSupported = False
 #Compile the model
 if compileSupported:
     print('Compiling the model')
@@ -97,10 +131,11 @@ if ddp:
 raw_model = model.module if ddp else model # get the underlying model to be able to sen them to the optimizer
 # Load the data
 #path = '../data/simple/'
-path = 'data/simple/'
+#path = 'data/simple/'
+path = '../data/edu_fineweb10B/'
 
 #Some hyper params
-max_steps = 5000 # number of training steps rather than epochs
+max_steps = 5000*100 # number of training steps rather than epochs
 
 # create the log directory we will write checkpoints to and log to
 log_dir = "logs"
@@ -109,17 +144,23 @@ log_file = os.path.join(log_dir, f"log.txt")
 with open(log_file, "w") as f: # open for writing to clear the file
     pass
 
-#total_batch_size = 524288 # 2**19, ~0.5M, in number of tokens
-total_batch_size = 1024*16
-B = 16 #micro batch size
-T = 256 # sequence length
+total_batch_size = 524288 # 2**19, ~0.5M, in number of tokens
+B = 32 # micro batch size
+T = 1024 # sequence length
+assert total_batch_size % (B * T * ddp_world_size) == 0, "make sure total_batch_size is divisible by B * T * ddp_world_size"
+
+#total_batch_size = 1024*16
+#B = 16 #micro batch size
+#T = 256 # sequence length
 # process_rank = 0
 # num_processes = 1
 # ddp_world_size = 1
 grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
 
-train_loader = DataLoaderGPT(B=B, T=T, process_rank=ddp_rank,num_processes=ddp_world_size, split='train', data_root=path, is_text=True)
-val_loader = DataLoaderGPT(B=B, T=T, process_rank=ddp_rank,num_processes=ddp_world_size, split='val', data_root=path, is_text=True)
+# train_loader = DataLoaderGPT(B=B, T=T, process_rank=ddp_rank,num_processes=ddp_world_size, split='train', data_root=path, is_text=True)
+# val_loader = DataLoaderGPT(B=B, T=T, process_rank=ddp_rank,num_processes=ddp_world_size, split='val', data_root=path, is_text=True)
+train_loader = DataLoaderGPT(B=B, T=T, process_rank=ddp_rank,num_processes=ddp_world_size, split='train', data_root=path, is_text=False)
+val_loader = DataLoaderGPT(B=B, T=T, process_rank=ddp_rank,num_processes=ddp_world_size, split='val', data_root=path, is_text=False)
 
 
 print(f"total desired batch size: {total_batch_size}")
@@ -133,7 +174,8 @@ tokenizer = tiktoken.get_encoding('gpt2')
 precision_context = torch.autocast(device_type=device.type, dtype=torch.bfloat16) if bf16supported else contextlib.nullcontext()
 
 
-lr_scheduler = LRScheduler(max_lr=6e-4, min_lr=6e-5, warmup_steps=10, max_steps=50)
+#lr_scheduler = LRScheduler(max_lr=6e-4, min_lr=6e-5, warmup_steps=10, max_steps=50)
+lr_scheduler = LRScheduler(max_lr=6e-4, min_lr=6e-5, warmup_steps=715, max_steps=19073)
 lr = lr_scheduler.get_lr(0)
 
 # Create the optimizer
@@ -157,9 +199,9 @@ print(f"number of no decay params: {num_no_decay_params}")
 
 #optimizer = torch.optim.AdamW(model.parameters(), betas=(0.9, 0.95), lr=lr)
 optimizer = torch.optim.AdamW(optim_groups, betas=(0.9, 0.95), eps=1e-8, lr=lr, fused=True)
-for step in range(max_steps):
+for step in range(start_step, max_steps):
     t0 = time.time()
-
+    break
     last_step = (step == max_steps - 1)
 
     # once in a while evaluate our validation loss
