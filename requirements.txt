@@ -1,0 +1,7 @@
+torch
+torchvision 
+torchaudio
+tiktoken
+numpy
+datasets
+tqdm
