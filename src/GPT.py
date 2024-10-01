@@ -133,6 +133,7 @@ class Generator():
     def __init__(self, model, tokenizer):
         self.model = model
         self.tokenizer = tokenizer
+        self.eot_token = tokenizer.eot_token
         
 
     def generate(self, prompt, max_len=100, top_k=50, num_return_sequences=1):
@@ -158,7 +159,10 @@ class Generator():
                 if torch.all(next_token == self.tokenizer.eot_token):
                     break
 
-            tokens = tokens.squeeze().cpu().numpy()
+            #tokens = tokens.squeeze().cpu().numpy()
+            tokens = tokens.cpu().numpy()
+            # Remove eot token
+            tokens = tokens[:, :-1]
 
             texts = []
             for row in tokens:
